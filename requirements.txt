@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+asyncpg
+scipy
+yfinance
+polygon-api-client
+fpdf2
+python-dotenv
+alpaca-py
+redis
