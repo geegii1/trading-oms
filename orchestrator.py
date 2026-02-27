@@ -5,6 +5,7 @@ from alpaca.trading.client import TradingClient
 import db
 from db import log_approved_trade, log_position, update_pnl_by_id, close_position_by_id, get_open_positions
 from agents import StrategistAgent, QuantAgent, GuardianAgent
+from price_fetcher import get_option_mid_price
 
 _trading_client = None
 
@@ -82,16 +83,16 @@ async def orchestration_cycle():
             approved.append(idea)
             print(f"APPROVED: {idea['strategy']} on {idea['underlying']} (conf: {idea['confidence']:.3f})")
 
-            client = get_trading_client()
-            broker_positions = {p.symbol: p for p in client.get_all_positions()}
-            real_entry = float(broker_positions[idea["underlying"]].avg_entry_price) \
-                if idea["underlying"] in broker_positions else 100.0
+            # Get real options mid price
+            entry_price = await asyncio.get_event_loop().run_in_executor(
+                None, get_option_mid_price, idea["underlying"], idea["strategy"]
+            )
 
             if not shadow_mode:
-                print(f"LIVE MODE: Would submit order for {idea['underlying']}")
+                print(f"LIVE MODE: Would submit order for {idea['underlying']} at ${entry_price:.2f}")
 
             if db.db_pool is not None:
-                await log_position(idea, real_entry)
+                await log_position(idea, entry_price)
         else:
             print(f"Rejected by Guardian: {risk_result['reason']}")
 
