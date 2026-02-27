@@ -38,14 +38,16 @@ async def dashboard():
     trades_html = "<tr><th>Time</th><th>Strategy</th><th>Underlying</th><th>Conf</th><th>Quant</th><th>Risk</th><th>Approved</th><th>Rationale</th></tr>"
     for trade in recent_trades:
         approved_color = "green" if trade['approved'] else "red"
+        quant = f"{float(trade['quant_score']):.3f}" if trade['quant_score'] else 'N/A'
+        risk = f"{float(trade['risk_score']):.3f}" if trade['risk_score'] else 'N/A'
         trades_html += f"""
         <tr>
             <td>{trade['timestamp']}</td>
             <td>{trade['strategy']}</td>
             <td>{trade['underlying']}</td>
-            <td>{trade['confidence']:.3f}</td>
-            <td>{trade['quant_score'] if trade['quant_score'] else 'N/A'}</td>
-            <td>{trade['risk_score'] if trade['risk_score'] else 'N/A'}</td>
+            <td>{float(trade['confidence']):.3f}</td>
+            <td>{quant}</td>
+            <td>{risk}</td>
             <td style="color:{approved_color};">{'Yes' if trade['approved'] else 'No'}</td>
             <td>{trade['rationale']}</td>
         </tr>
@@ -54,17 +56,18 @@ async def dashboard():
     positions_html = "<tr><th>ID</th><th>Time</th><th>Strategy</th><th>Underlying</th><th>Entry $</th><th>Current $</th><th>P&L</th></tr>"
     total_pnl = 0.0
     for pos in open_positions:
-        pnl = pos['unrealized_pnl'] or 0.0
+        pnl = float(pos['unrealized_pnl']) if pos['unrealized_pnl'] else 0.0
         total_pnl += pnl
         color = "green" if pnl >= 0 else "red"
+        current = f"${float(pos['current_price']):.2f}" if pos['current_price'] else 'N/A'
         positions_html += f"""
         <tr>
             <td>{pos['id']}</td>
             <td>{pos['trade_timestamp']}</td>
             <td>{pos['strategy']}</td>
             <td>{pos['underlying']}</td>
-            <td>${pos['entry_price']:.2f}</td>
-            <td>{pos['current_price'] or 'N/A'}</td>
+            <td>${float(pos['entry_price']):.2f}</td>
+            <td>{current}</td>
             <td style="color:{color};">${pnl:.2f}</td>
         </tr>
         """
@@ -78,7 +81,7 @@ async def dashboard():
         <style>
             body {{ font-family: Arial, sans-serif; padding: 20px; }}
             table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
-            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 13px; }}
             th {{ background-color: #f2f2f2; }}
             h1, h2 {{ text-align: center; }}
         </style>
