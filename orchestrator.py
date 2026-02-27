@@ -7,6 +7,7 @@ from db import log_approved_trade, log_position, update_pnl_by_id, close_positio
 from agents import StrategistAgent, QuantAgent, GuardianAgent
 from price_fetcher import get_option_mid_price
 from order_executor import submit_option_order
+from market_hours import is_market_open, market_status
 
 _trading_client = None
 
@@ -35,7 +36,6 @@ async def refresh_pnl_from_broker():
             position_id = pos["id"]
             entry_price = float(pos["entry_price"])
 
-            # Get current market price for this position
             current_price = await asyncio.get_event_loop().run_in_executor(
                 None, get_option_mid_price, symbol, pos["strategy"]
             )
@@ -43,9 +43,7 @@ async def refresh_pnl_from_broker():
             if current_price <= 0:
                 continue
 
-            # P&L = (current - entry) * 100 (1 contract = 100 shares)
             pnl = round((current_price - entry_price) * 100, 2)
-
             await update_pnl_by_id(conn, position_id, current_price, pnl)
 
             if pnl >= 200:
@@ -58,8 +56,17 @@ async def refresh_pnl_from_broker():
                 print(f"Position {position_id} ({symbol}): entry ${entry_price:.2f} → current ${current_price:.2f} → P&L ${pnl:.2f}")
 
 async def orchestration_cycle():
-    shadow_mode = os.getenv("SHADOW_MODE", "true").lower() == "true"
-    print(f"[{datetime.utcnow().isoformat()}] Starting orchestration cycle (shadow_mode={shadow_mode})")
+    shadow_mode = os.getenv("SHADOW_MODE", "false").lower() == "true"
+    status = market_status()
+    print(f"[{datetime.utcnow().isoformat()}] Market {status['status']} ({status['current_time_et']})")
+
+    if not status["is_open"]:
+        print("Market closed — skipping trade cycle")
+        # Still update P&L with latest available prices
+        await refresh_pnl_from_broker()
+        return
+
+    print(f"Starting orchestration cycle (shadow_mode={shadow_mode})")
 
     strategist = StrategistAgent()
     quant = QuantAgent()
@@ -93,13 +100,11 @@ async def orchestration_cycle():
             approved.append(idea)
             print(f"APPROVED: {idea['strategy']} on {idea['underlying']} (conf: {idea['confidence']:.3f})")
 
-            # Get real entry price
             entry_price = await asyncio.get_event_loop().run_in_executor(
                 None, get_option_mid_price, idea["underlying"], idea["strategy"]
             )
 
             if not shadow_mode:
-                # Submit real paper order to Alpaca
                 result = await asyncio.get_event_loop().run_in_executor(
                     None, submit_option_order, idea["underlying"], idea["strategy"]
                 )
