@@ -28,7 +28,7 @@ services:
     env_file:
       - .env
     environment:
-      - SHADOW_MODE=true
+      - SHADOW_MODE=false
       - REDIS_URL=redis://redis:6379
       - DB_URL=postgresql://oms:oms123@timescale:5432/oms
       - ALPACA_BASE_URL=https://paper-api.alpaca.markets
