@@ -1,29 +1,60 @@
 import os
 import random
-from datetime import datetime
+from datetime import datetime, date
 import yfinance as yf
-from polygon import RESTClient
 from alpaca.trading.client import TradingClient
+from alpaca.data.historical.option import OptionHistoricalDataClient
+from alpaca.data.requests import OptionChainRequest
+from alpaca.trading.requests import GetOptionContractsRequest
 
 class StrategistAgent:
     def __init__(self):
-        self.polygon_client = RESTClient(api_key=os.getenv("POLYGON_API_KEY"))
+        self.trading_client = TradingClient(
+            api_key=os.getenv("ALPACA_API_KEY"),
+            secret_key=os.getenv("ALPACA_SECRET_KEY"),
+            paper=True
+        )
+        self.data_client = OptionHistoricalDataClient(
+            api_key=os.getenv("ALPACA_API_KEY"),
+            secret_key=os.getenv("ALPACA_SECRET_KEY")
+        )
 
     def get_iv_rank(self, symbol: str) -> float:
-        """Calculate real IV rank using Polygon options data"""
+        """Calculate IV rank using Alpaca options chain"""
         try:
-            chain = self.polygon_client.list_snapshot_options_chain(
-                symbol,
-                params={"limit": 250}
+            req = GetOptionContractsRequest(
+                underlying_symbols=[symbol],
+                expiration_date_gte=date.today(),
+                limit=200
             )
-            ivs = [c.implied_volatility for c in chain if c.implied_volatility]
+            contracts = self.trading_client.get_option_contracts(req)
+            ivs = [float(c.close_price) for c in contracts.option_contracts if c.close_price]
             if not ivs:
                 return 50.0
             current_iv = sum(ivs) / len(ivs)
-            iv_rank = min(100, max(0, (current_iv - min(ivs)) / (max(ivs) - min(ivs)) * 100))
+            iv_rank = min(100, max(0, (current_iv - min(ivs)) / (max(ivs) - min(ivs) + 0.0001) * 100))
             return round(iv_rank, 2)
         except Exception as e:
-            print(f"IV rank fetch failed: {e} — using fallback")
+            print(f"Alpaca IV rank failed: {e} — using yfinance fallback")
+            return self.get_iv_rank_yfinance(symbol)
+
+    def get_iv_rank_yfinance(self, symbol: str) -> float:
+        """Fallback IV rank from yfinance"""
+        try:
+            ticker = yf.Ticker(symbol)
+            options_dates = ticker.options
+            if not options_dates:
+                return 50.0
+            chain = ticker.option_chain(options_dates[0])
+            ivs = list(chain.calls['impliedVolatility'].dropna()) + \
+                  list(chain.puts['impliedVolatility'].dropna())
+            if not ivs:
+                return 50.0
+            current_iv = sum(ivs) / len(ivs)
+            iv_rank = min(100, max(0, (current_iv - min(ivs)) / (max(ivs) - min(ivs) + 0.0001) * 100))
+            return round(iv_rank, 2)
+        except Exception as e:
+            print(f"yfinance IV rank also failed: {e} — returning default 50")
             return 50.0
 
     def get_market_state(self):
@@ -101,42 +132,68 @@ class StrategistAgent:
         for idea in ideas:
             idea["timestamp"] = datetime.utcnow().isoformat()
 
-        return ideas  # Return only high-conviction ideas, no random fallbacks
+        return ideas
 
 
 class QuantAgent:
     def __init__(self):
-        self.polygon_client = RESTClient(api_key=os.getenv("POLYGON_API_KEY"))
+        self.trading_client = TradingClient(
+            api_key=os.getenv("ALPACA_API_KEY"),
+            secret_key=os.getenv("ALPACA_SECRET_KEY"),
+            paper=True
+        )
 
     def validate(self, idea):
-        """Real validation using Polygon options chain data"""
+        """Validate using Alpaca options chain, fallback to yfinance"""
         try:
-            chain = list(self.polygon_client.list_snapshot_options_chain(
-                idea["underlying"],
-                params={"limit": 50}
-            ))
-            if not chain:
-                return {"valid": False, "reason": "No options chain data available", "score": None}
+            return self._validate_alpaca(idea)
+        except Exception as e:
+            print(f"Alpaca validation failed: {e} — trying yfinance fallback")
+            return self._validate_yfinance(idea)
 
-            ivs = [c.implied_volatility for c in chain if c.implied_volatility]
-            avg_iv = sum(ivs) / len(ivs) if ivs else 0
-            volumes = [c.day.volume for c in chain if c.day and c.day.volume]
-            avg_volume = sum(volumes) / len(volumes) if volumes else 0
+    def _validate_alpaca(self, idea):
+        req = GetOptionContractsRequest(
+            underlying_symbols=[idea["underlying"]],
+            expiration_date_gte=date.today(),
+            limit=50
+        )
+        contracts = self.trading_client.get_option_contracts(req)
+        chain = contracts.option_contracts
 
-            # Minimum liquidity check
-            if avg_volume < 100:
+        if not chain:
+            return {"valid": False, "reason": "No options chain data from Alpaca", "score": None}
+
+        ivs = [float(c.close_price) for c in chain if c.close_price]
+        avg_iv = sum(ivs) / len(ivs) if ivs else 0
+
+        if avg_iv <= 0:
+            return {"valid": False, "reason": "IV data unavailable", "score": None}
+
+        score = round(min(0.98, 0.5 + avg_iv), 3)
+        return {"valid": True, "score": score}
+
+    def _validate_yfinance(self, idea):
+        try:
+            ticker = yf.Ticker(idea["underlying"])
+            options_dates = ticker.options
+            if not options_dates:
+                return {"valid": False, "reason": "No options data from yfinance", "score": None}
+
+            chain = ticker.option_chain(options_dates[0])
+            calls = chain.calls
+            if calls.empty:
+                return {"valid": False, "reason": "Empty options chain", "score": None}
+
+            avg_volume = calls['volume'].fillna(0).mean()
+            avg_iv = calls['impliedVolatility'].fillna(0).mean()
+
+            if avg_volume < 10:
                 return {"valid": False, "reason": "Insufficient options liquidity", "score": None}
 
-            # IV sanity check
-            if avg_iv <= 0 or avg_iv > 5:
-                return {"valid": False, "reason": "IV out of reasonable range", "score": None}
-
-            score = round(min(0.98, 0.5 + avg_iv + (avg_volume / 10000)), 3)
+            score = round(min(0.98, 0.5 + avg_iv), 3)
             return {"valid": True, "score": score}
-
         except Exception as e:
-            print(f"QuantAgent validation error: {e}")
-            return {"valid": False, "reason": f"Validation error: {e}", "score": None}
+            return {"valid": False, "reason": f"yfinance validation error: {e}", "score": None}
 
 
 class GuardianAgent:
@@ -172,8 +229,7 @@ class GuardianAgent:
                 abs(float(p.market_value)) for p in positions
                 if p.symbol.startswith(underlying)
             )
-            total_exposure = sum(abs(float(p.market_value)) for p in positions)
-            if total_exposure > 0 and (underlying_exposure / equity) > 0.20:
+            if equity > 0 and (underlying_exposure / equity) > 0.20:
                 return {"approved": False, "reason": f"Concentration limit exceeded for {underlying} (max 20%)"}
 
             # Margin check

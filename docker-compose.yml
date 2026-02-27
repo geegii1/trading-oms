@@ -11,6 +11,11 @@ services:
     volumes:
       - timescale_data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oms"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -31,8 +36,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - timescale
-      - redis
+      timescale:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
