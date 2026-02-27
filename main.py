@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 from db import init_db, get_recent_approved_trades, get_open_positions, db_pool
 from orchestrator import main_loop
+from market_hours import market_status
 import asyncio
 
 @asynccontextmanager
@@ -24,7 +25,6 @@ async def root():
     <body>
         <h1>AI Autonomous Options Trading OMS</h1>
         <p>Dashboard: <a href="/dashboard">/dashboard</a></p>
-        <p>API docs: <a href="/docs">/docs</a></p>
         <p>Health: <a href="/health">/health</a></p>
     </body>
     </html>
@@ -34,6 +34,10 @@ async def root():
 async def dashboard():
     recent_trades = await get_recent_approved_trades(limit=10)
     open_positions = await get_open_positions()
+    status = market_status()
+
+    market_color = "green" if status["is_open"] else "red"
+    market_badge = f'<span style="background:{market_color};color:white;padding:4px 12px;border-radius:12px;font-size:13px;">● {status["status"]}</span>'
 
     trades_html = "<tr><th>Time</th><th>Strategy</th><th>Underlying</th><th>Conf</th><th>Quant</th><th>Risk</th><th>Approved</th><th>Rationale</th></tr>"
     for trade in recent_trades:
@@ -79,21 +83,25 @@ async def dashboard():
         <title>AI OMS Dashboard</title>
         <meta http-equiv="refresh" content="60">
         <style>
-            body {{ font-family: Arial, sans-serif; padding: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
+            body {{ font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; }}
+            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background: white; }}
             th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 13px; }}
             th {{ background-color: #f2f2f2; }}
             h1, h2 {{ text-align: center; }}
+            .status-bar {{ text-align: center; margin-bottom: 20px; }}
+            .pnl-total {{ text-align: center; font-size: 18px; font-weight: bold; margin: 20px 0; }}
         </style>
     </head>
     <body>
         <h1>AI Autonomous Options Trading OMS</h1>
-        <p style="text-align:center;">Shadow Mode • Cycle every 60s • Auto-refresh every 60s</p>
+        <div class="status-bar">
+            {market_badge} &nbsp; {status['current_time_et']} &nbsp;|&nbsp; Cycle every 60s &nbsp;|&nbsp; Auto-refresh every 60s
+        </div>
         <h2>Recent Approved Trades (last 10)</h2>
         <table>{trades_html}</table>
         <h2>Open Positions</h2>
         <table>{positions_html}</table>
-        <h2>Total Unrealized P&L: <span style="color:{'green' if total_pnl >= 0 else 'red'};">${total_pnl:.2f}</span></h2>
+        <div class="pnl-total">Total Unrealized P&L: <span style="color:{'green' if total_pnl >= 0 else 'red'};">${total_pnl:.2f}</span></div>
     </body>
     </html>
     """
@@ -101,7 +109,10 @@ async def dashboard():
 
 @app.get("/health")
 async def health():
+    status = market_status()
     return {
         "status": "healthy",
-        "db_pool": "initialized" if db_pool is not None else "not ready"
+        "db_pool": "initialized" if db_pool is not None else "not ready",
+        "market": status["status"],
+        "time_et": status["current_time_et"]
     }
